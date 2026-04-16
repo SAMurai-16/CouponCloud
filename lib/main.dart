@@ -15,6 +15,10 @@ import 'http_client_factory.dart' as http_client_factory;
 import 'session_storage.dart';
 
 
+
+part 'auth_flow.dart';
+part 'main_screen.dart';
+part 'hostel_complaints_page.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
@@ -58,6 +62,7 @@ abstract final class AppRoutes {
   static const menus = '/menus';
   static const rate = '/rate';
   static const complaint = '/complaint';
+  static const hostelComplaints = '/hostel-complaints';
   static const profile = '/profile';
   static const exchangeRequests = '/exchange-requests';
 }
@@ -196,6 +201,14 @@ class _CouponRecord {
   String? get qrImageUrl => raw?['qr_image_url']?.toString();
   String? get couponDate => raw?['coupon_date']?.toString();
   String? get validTill => raw?['valid_till']?.toString();
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{'coupon_id': couponId};
+    if (raw != null) {
+      json.addAll(raw!);
+    }
+    return json;
+  }
 }
 
 class _AuthApi {
@@ -563,6 +576,16 @@ class _CouponApi {
   static final Uri _apiBaseUri = AppEnv.apiBaseUri;
 
   Future<List<_CouponRecord>> fetchCoupons() async {
+    final cachedResponse = await _DailyCache.loadCouponsResponse();
+    if (cachedResponse != null) {
+      try {
+        final decoded = jsonDecode(cachedResponse);
+        return _parseCouponList(decoded);
+      } catch (_) {
+        await _DailyCache.clearCouponsResponse();
+      }
+    }
+
     final response = await ApiRequestPolicy.runGetWithRetry(
       () => _ApiHttp.client.get(
         _couponsUri,
@@ -576,7 +599,9 @@ class _CouponApi {
       );
     }
 
-    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    final responseBody = utf8.decode(response.bodyBytes);
+    await _DailyCache.saveCouponsResponse(responseBody);
+    final decoded = jsonDecode(responseBody);
     return _parseCouponList(decoded);
   }
 
@@ -884,7 +909,11 @@ class _MessMenuEntry {
 abstract final class _DailyCache {
   static const _studentProfilePrefix = 'coupon_cloud_student_profile';
   static const _menusPrefix = 'coupon_cloud_daily_menus';
+  static const _couponsPrefix = 'coupon_cloud_coupons';
+  static const _mealCouponPrefix = 'coupon_cloud_meal_coupon';
   static const _qrPrefix = 'coupon_cloud_qr';
+  static final Map<String, String> _couponResponseMemoryCache = {};
+  static final Map<String, String> _mealCouponMemoryCache = {};
   static final Map<String, Uint8List> _qrMemoryCache = {};
 
   static String _todayKey() {
@@ -901,8 +930,13 @@ abstract final class _DailyCache {
 
   static String _menusKey() => '$_menusPrefix-${_todayKey()}';
 
+  static String _couponsKey() => '$_couponsPrefix-${_todayKey()}';
+
+  static String _mealCouponsKey() => '$_mealCouponPrefix-${_todayKey()}';
+
   static String _qrKey(String couponId) {
-    return '$_qrPrefix-${_todayKey()}-${Uri.encodeComponent(couponId)}';
+    final normalizedCouponId = couponId.trim();
+    return '$_qrPrefix-${_todayKey()}-${Uri.encodeComponent(normalizedCouponId)}';
   }
 
   static Future<_StudentProfile?> loadStudentProfile(String studentId) async {
@@ -982,20 +1016,128 @@ abstract final class _DailyCache {
     );
   }
 
-  static Future<Uint8List?> loadQrBytes(String couponId) async {
-    final memoryCached = _qrMemoryCache[couponId];
+  static Future<String?> loadCouponsResponse() async {
+    final key = _couponsKey();
+    final memoryCached = _couponResponseMemoryCache[key];
     if (memoryCached != null) {
       return memoryCached;
     }
 
-    final encoded = await AppCacheStorage.getString(_qrKey(couponId));
+    final encoded = await AppCacheStorage.getString(key);
+    if (encoded == null || encoded.isEmpty) {
+      return null;
+    }
+
+    _couponResponseMemoryCache[key] = encoded;
+    return encoded;
+  }
+
+  static Future<void> saveCouponsResponse(String body) async {
+    final key = _couponsKey();
+    _couponResponseMemoryCache[key] = body;
+    await AppCacheStorage.setString(key, body);
+  }
+
+  static Future<void> clearCouponsResponse() async {
+    final key = _couponsKey();
+    _couponResponseMemoryCache.remove(key);
+    await AppCacheStorage.remove(key);
+    await clearMealCoupons();
+  }
+
+  static Future<_CouponRecord?> loadMealCoupon(String meal) async {
+    final encoded = await _loadMealCouponsJson();
+    if (encoded == null || encoded.isEmpty) {
+      return null;
+    }
+
+    try {
+      final decoded = jsonDecode(encoded);
+      if (decoded is Map<String, dynamic>) {
+        final mealKey = _normalizeMealKey(meal);
+        final rawCoupon = decoded[mealKey];
+        if (rawCoupon is Map<String, dynamic>) {
+          final couponId = rawCoupon['coupon_id']?.toString().trim();
+          if (couponId != null && couponId.isNotEmpty) {
+            return _CouponRecord(
+              couponId: couponId,
+              raw: rawCoupon,
+            );
+          }
+        }
+      }
+    } catch (_) {
+      return null;
+    }
+
+    return null;
+  }
+
+  static Future<void> saveMealCoupon(String meal, _CouponRecord coupon) async {
+    final mealKey = _normalizeMealKey(meal);
+    final encoded = await _loadMealCouponsJson();
+    final decoded = encoded == null || encoded.isEmpty
+        ? <String, dynamic>{}
+        : _decodeMealCoupons(encoded);
+    decoded[mealKey] = coupon.toJson();
+    final nextEncoded = jsonEncode(decoded);
+    _mealCouponMemoryCache[_mealCouponsKey()] = nextEncoded;
+    await AppCacheStorage.setString(_mealCouponsKey(), nextEncoded);
+  }
+
+  static Future<void> clearMealCoupons() async {
+    final key = _mealCouponsKey();
+    _mealCouponMemoryCache.remove(key);
+    await AppCacheStorage.remove(key);
+  }
+
+  static Future<String?> _loadMealCouponsJson() async {
+    final key = _mealCouponsKey();
+    final memoryCached = _mealCouponMemoryCache[key];
+    if (memoryCached != null) {
+      return memoryCached;
+    }
+
+    final encoded = await AppCacheStorage.getString(key);
+    if (encoded == null || encoded.isEmpty) {
+      return null;
+    }
+
+    _mealCouponMemoryCache[key] = encoded;
+    return encoded;
+  }
+
+  static Map<String, dynamic> _decodeMealCoupons(String encoded) {
+    try {
+      final decoded = jsonDecode(encoded);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    } catch (_) {
+      // Rebuild the cache below.
+    }
+    return <String, dynamic>{};
+  }
+
+  static String _normalizeMealKey(String meal) {
+    return meal.trim().toUpperCase();
+  }
+
+  static Future<Uint8List?> loadQrBytes(String couponId) async {
+    final normalizedCouponId = couponId.trim();
+    final memoryCached = _qrMemoryCache[normalizedCouponId];
+    if (memoryCached != null) {
+      return memoryCached;
+    }
+
+    final encoded = await AppCacheStorage.getString(_qrKey(normalizedCouponId));
     if (encoded == null || encoded.isEmpty) {
       return null;
     }
 
     try {
       final decoded = base64Decode(encoded);
-      _qrMemoryCache[couponId] = decoded;
+      _qrMemoryCache[normalizedCouponId] = decoded;
       return decoded;
     } catch (_) {
       return null;
@@ -1003,13 +1145,18 @@ abstract final class _DailyCache {
   }
 
   static Future<void> saveQrBytes(String couponId, Uint8List bytes) async {
-    _qrMemoryCache[couponId] = bytes;
-    await AppCacheStorage.setString(_qrKey(couponId), base64Encode(bytes));
+    final normalizedCouponId = couponId.trim();
+    _qrMemoryCache[normalizedCouponId] = bytes;
+    await AppCacheStorage.setString(
+      _qrKey(normalizedCouponId),
+      base64Encode(bytes),
+    );
   }
 
   static Future<void> clearQrBytes(String couponId) async {
-    _qrMemoryCache.remove(couponId);
-    await AppCacheStorage.remove(_qrKey(couponId));
+    final normalizedCouponId = couponId.trim();
+    _qrMemoryCache.remove(normalizedCouponId);
+    await AppCacheStorage.remove(_qrKey(normalizedCouponId));
   }
 }
 
@@ -1157,669 +1304,212 @@ class _MessMenuApi {
   }
 }
 
-class CouponCloudHome extends StatefulWidget {
-  const CouponCloudHome({super.key});
+class _DailyFeedbackSummaryApi {
+  const _DailyFeedbackSummaryApi();
 
-  @override
-  State<CouponCloudHome> createState() => _CouponCloudHomeState();
-}
+  static final Uri _summaryUri = AppEnv.uri('/feedbacks/daily-summary/');
 
-class _CouponCloudHomeState extends State<CouponCloudHome> {
-  bool _isLoggedIn = false;
-  bool _isInitializing = true;
-  int _rating = 0;
-  final _authApi = const _AuthApi();
-  final _feedbackApi = const _FeedbackApi();
-  final _complaintApi = const _ComplaintApi();
-  final _couponExchangeApi = const _CouponExchangeApi();
-  final _studentApi = const _StudentApi();
-  String _studentName = 'Student';
-  String _messName = 'Mess';
-  String? _userId;
-  String? _hostelId;
-  String? _studentId;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_restoreSession());
-  }
-
-  void _rate(int value) => setState(() => _rating = value);
-
-  Future<void> _restoreSession() async {
-    final session = await SessionStorage.load();
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _isLoggedIn = session.isLoggedIn;
-      _studentId = session.studentId;
-      _studentName = session.studentName;
-      _messName = session.messName;
-      _userId = session.userId;
-      _hostelId = session.hostelId;
-      _isInitializing = false;
-    });
-
-    if (session.isLoggedIn && session.studentId != null) {
-      unawaited(_loadStudentProfile(session.studentId!));
-    }
-  }
-
-  Future<void> _saveSession() {
-    return SessionStorage.save(
-      SessionData(
-        isLoggedIn: _isLoggedIn,
-        studentId: _studentId,
-        studentName: _studentName,
-        messName: _messName,
-        userId: _userId,
-        hostelId: _hostelId,
-      ),
-    );
-  }
-
-  Route<dynamic> _buildRoute(RouteSettings settings) {
-    final routeName = settings.name ?? AppRoutes.login;
-
-    if (!_isLoggedIn &&
-        routeName != AppRoutes.login &&
-        routeName != AppRoutes.signup) {
-      return _buildPageRoute(AppRoutes.login, _buildLoginScreen);
-    }
-
-    switch (routeName) {
-      case AppRoutes.login:
-        return _buildPageRoute(AppRoutes.login, _buildLoginScreen);
-      case AppRoutes.signup:
-        return _buildPageRoute(AppRoutes.signup, _buildSignupScreen);
-      case AppRoutes.home:
-        return _buildPageRoute(AppRoutes.home, _buildHomeScreen);
-      case AppRoutes.swap:
-        return _buildPageRoute(AppRoutes.swap, _buildSwapScreen);
-      case AppRoutes.guest:
-        return _buildPageRoute(AppRoutes.guest, _buildGuestScreen);
-      case AppRoutes.menus:
-        return _buildPageRoute(AppRoutes.menus, _buildMenusScreen);
-      case AppRoutes.rate:
-        return _buildPageRoute(AppRoutes.rate, _buildRateScreen);
-      case AppRoutes.complaint:
-        return _buildPageRoute(AppRoutes.complaint, _buildComplaintScreen);
-      case AppRoutes.profile:
-        return _buildPageRoute(AppRoutes.profile, _buildProfileScreen);
-      case AppRoutes.exchangeRequests:
-        return _buildPageRoute(
-          AppRoutes.exchangeRequests,
-          _buildExchangeRequestsScreen,
-        );
-      default:
-        return _buildPageRoute(AppRoutes.login, _buildLoginScreen);
-    }
-  }
-
-  PageRouteBuilder<void> _buildPageRoute(String name, WidgetBuilder builder) {
-    return PageRouteBuilder<void>(
-      settings: RouteSettings(name: name),
-      transitionDuration: const Duration(milliseconds: 260),
-      reverseTransitionDuration: const Duration(milliseconds: 220),
-      pageBuilder: (context, animation, secondaryAnimation) =>
-          SingleChildScrollView(key: ValueKey(name), child: builder(context)),
-      transitionsBuilder: (context, animation, secondaryAnimation, child) {
-        final curve = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-        );
-        final slide = Tween<Offset>(
-          begin: const Offset(0.08, 0),
-          end: Offset.zero,
-        ).animate(curve);
-        return FadeTransition(
-          opacity: curve,
-          child: SlideTransition(position: slide, child: child),
-        );
-      },
-    );
-  }
-
-  Widget _buildLoginScreen(BuildContext context) {
-    return _LoginScreen(
-      onLogin: _login,
-      onOpenSignup: () => Navigator.of(context).pushNamed(AppRoutes.signup),
-    );
-  }
-
-  Widget _buildSignupScreen(BuildContext context) {
-    return _SignupScreen(
-      onSignup: _signup,
-      onOpenLogin: () =>
-          Navigator.of(context).pushReplacementNamed(AppRoutes.login),
-    );
-  }
-
-  Future<void> _signup(BuildContext context, _SignupPayload payload) async {
-    await _runAuthAction(
-      context,
-      actionName:
-          '${payload.role[0].toUpperCase()}${payload.role.substring(1)} signup',
-      request: () => _authApi.signup(payload),
-      onSuccess: () {
-        if (payload.role == 'student' && payload.studentId != null) {
-          unawaited(_loadStudentProfile(payload.studentId!));
-        }
-      },
-    );
-  }
-
-  Future<void> _login(BuildContext context, _LoginPayload payload) async {
-    await _runAuthAction(
-      context,
-      actionName: 'Login',
-      request: () => _authApi.login(payload),
-      onSuccess: () {
-        setState(() {
-          _studentId = payload.studentId;
-          _isLoggedIn = true;
-        });
-        unawaited(_saveSession());
-        unawaited(_loadStudentProfile(payload.studentId));
-        Navigator.of(context).pushReplacementNamed(AppRoutes.home);
-      },
-    );
-  }
-
-  Future<void> _loadStudentProfile(String studentId) async {
+  Future<Map<String, Map<String, _MealFeedbackSummary>>> fetchDailySummary() async {
     try {
-      final cachedProfile = await _DailyCache.loadStudentProfile(studentId);
-      if (cachedProfile != null) {
-        if (!mounted) {
-          return;
-        }
-        setState(() {
-          _studentName = cachedProfile.name;
-          _messName = cachedProfile.messName;
-          _userId = cachedProfile.userId;
-          _hostelId = cachedProfile.hostelId;
-          _studentId = studentId;
-        });
-        return;
+      final response = await ApiRequestPolicy.runGetWithRetry(
+        () => _ApiHttp.client.get(
+          _summaryUri,
+          headers: const {'Accept': 'application/json'},
+        ),
+      );
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return const {};
       }
 
-      final profile = await _studentApi.fetchStudentProfile(studentId);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _studentName = profile.name;
-        _messName = profile.messName;
-        _userId = profile.userId;
-        _hostelId = profile.hostelId;
-        _studentId = studentId;
-      });
-      unawaited(_DailyCache.saveStudentProfile(studentId, profile));
-      unawaited(_saveSession());
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return _parseSummaryMap(decoded);
     } catch (_) {
-      // Keep existing fallback values when profile fetch fails.
+      return const {};
     }
   }
 
-  Future<void> _runAuthAction(
-    BuildContext context, {
-    required String actionName,
-    required Future<_ApiResult> Function() request,
-    VoidCallback? onSuccess,
-  }) async {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(
-      SnackBar(content: Text('$actionName request started...')),
-    );
+  Map<String, Map<String, _MealFeedbackSummary>> _parseSummaryMap(dynamic decoded) {
+    final summaries = <String, Map<String, _MealFeedbackSummary>>{};
 
-    final result = await request();
-    if (!mounted) {
-      return;
+    if (decoded is List) {
+      for (final raw in decoded) {
+        _collectSummaryRow(raw, summaries);
+      }
+      return summaries;
     }
 
-    if (result.isSuccess) {
-      onSuccess?.call();
-      final details = _buildResponseSummary(result);
-      messenger.showSnackBar(
-        SnackBar(content: Text('$actionName success: $details')),
-      );
-      return;
+    if (decoded is Map<String, dynamic>) {
+      for (final key in ['results', 'data', 'summaries', 'ratings']) {
+        final value = decoded[key];
+        if (value is List) {
+          for (final raw in value) {
+            _collectSummaryRow(raw, summaries);
+          }
+          return summaries;
+        }
+      }
+
+      _collectSummaryRow(decoded, summaries);
     }
 
-    final details = _buildResponseSummary(result);
-    messenger.showSnackBar(
-      SnackBar(content: Text('$actionName failed: $details')),
-    );
+    return summaries;
   }
 
-  String _buildResponseSummary(_ApiResult result) {
-    if (result.error != null) {
-      return result.error!;
-    }
-    final body = result.body.trim();
-    if (body.isEmpty) {
-      return 'HTTP ${result.statusCode}';
-    }
-    return 'HTTP ${result.statusCode} - $body';
-  }
-
-  Widget _buildHomeScreen(BuildContext context) {
-    return _MainScreen(
-      studentName: _studentName,
-      messName: _messName,
-      onNavigate: (route) => Navigator.of(context).pushNamed(route),
-      onAvatarTap: () => Navigator.of(context).pushNamed(AppRoutes.profile),
-      onRequestExchange: _submitCouponExchangeRequest,
-    );
-  }
-
-  Widget _buildProfileScreen(BuildContext context) {
-    return _ProfileScreen(
-      studentId: _studentId,
-      onBack: () => Navigator.of(context).pop(),
-      onLogout: () => _logout(context),
-    );
-  }
-
-  Widget _buildSwapScreen(BuildContext context) {
-    return _SwapScreen(onBack: () => Navigator.of(context).pop());
-  }
-
-  Widget _buildGuestScreen(BuildContext context) {
-    return _GuestScreen(onBack: () => Navigator.of(context).pop());
-  }
-
-  Widget _buildMenusScreen(BuildContext context) {
-    return _MenusScreen(onBack: () => Navigator.of(context).pop());
-  }
-
-  Widget _buildRateScreen(BuildContext context) {
-    return _RateScreen(
-      onBack: () => Navigator.of(context).pop(),
-      onRate: _rate,
-      rating: _rating,
-      messName: _messName,
-      onSubmitFeedback: _submitRateFeedback,
-    );
-  }
-
-  Future<_ApiResult> _submitRateFeedback(_RateFeedbackInput input) {
-    final userId = _userId;
-    if (userId == null || userId.trim().isEmpty) {
-      return Future.value(
-        const _ApiResult(
-          isSuccess: false,
-          statusCode: 0,
-          error: 'User ID is missing. Please login again.',
-        ),
-      );
-    }
-
-    return _feedbackApi.submitFeedback(
-      raisedBy: _studentName,
-      raisedById: userId,
-      couponMeal: input.couponMeal,
-      rating: input.rating,
-      description: input.description,
-    );
-  }
-
-  Widget _buildComplaintScreen(BuildContext context) {
-    return _ComplaintScreen(
-      onBack: () => Navigator.of(context).pop(),
-      raisedBy: _studentName,
-      mess: _messName,
-      onSubmitComplaint: _submitComplaint,
-    );
-  }
-
-  Widget _buildExchangeRequestsScreen(BuildContext context) {
-    return CouponExchangeRequestsPage(
-      onBack: () => Navigator.of(context).pop(),
-    );
-  }
-
-  void _logout(BuildContext context) {
-    setState(() {
-      _isLoggedIn = false;
-      _userId = null;
-      _hostelId = null;
-      _studentId = null;
-      _studentName = 'Student';
-      _messName = 'Mess';
-    });
-    unawaited(SessionStorage.clear());
-    Navigator.of(
-      context,
-    ).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
-  }
-
-  Future<_ApiResult> _submitComplaint(_ComplaintInput input) {
-    final userId = _userId;
-    if (userId == null || userId.trim().isEmpty) {
-      return Future.value(
-        const _ApiResult(
-          isSuccess: false,
-          statusCode: 0,
-          error: 'User ID is missing. Please login again.',
-        ),
-      );
-    }
-
-    final hostelId = _hostelId;
-    if (hostelId == null || hostelId.trim().isEmpty) {
-      return Future.value(
-        const _ApiResult(
-          isSuccess: false,
-          statusCode: 0,
-          error: 'Hostel ID is missing. Please login again.',
-        ),
-      );
-    }
-
-    return _complaintApi.submitComplaint(
-      raisedBy: _studentName,
-      raisedById: userId,
-      mess: _messName,
-      hostelId: hostelId,
-      couponMeal: input.couponMeal,
-      complaintType: input.complaintType,
-      photoFile: input.photoFile,
-      description: input.description,
-    );
-  }
-
-  Future<_ApiResult> _submitCouponExchangeRequest(
-    _CouponExchangeRequestInput input,
+  void _collectSummaryRow(
+    dynamic raw,
+    Map<String, Map<String, _MealFeedbackSummary>> summaries,
   ) {
-    return _couponExchangeApi.submitExchangeRequest(
-      couponId: input.couponId,
-      requestedToStudentId: input.requestedToStudentId,
-      message: input.message,
+    if (raw is! Map<String, dynamic>) {
+      return;
+    }
+
+    final hostelId = _asText(raw, const ['hostel_id', 'hostelId']);
+    final meals = raw['meals'];
+    if (hostelId != null && meals is List) {
+      final perMeal = <String, _MealFeedbackSummary>{};
+      for (final mealRaw in meals) {
+        final summary = _parseMealRecord(hostelId, mealRaw);
+        if (summary != null) {
+          perMeal[summary.mealCode] = summary;
+        }
+      }
+      if (perMeal.isNotEmpty) {
+        summaries[hostelId] = perMeal;
+      }
+      return;
+    }
+
+    final summary = _parseMealRecord(hostelId ?? '', raw);
+    if (summary == null) {
+      return;
+    }
+
+    summaries.putIfAbsent(hostelId ?? '', () => {})[summary.mealCode] = summary;
+  }
+
+  _MealFeedbackSummary? _parseMealRecord(String hostelId, dynamic raw) {
+    if (raw is! Map<String, dynamic>) {
+      return null;
+    }
+
+    final mealCode = _normalizeMealCode(
+      _asText(raw, const ['coupon_meal', 'meal', 'couponMeal']),
+    );
+    if (mealCode == null) {
+      return null;
+    }
+
+    final avg = _asDouble(raw, const [
+      'average_rating',
+      'avg_rating',
+      'averageRating',
+      'rating_avg',
+      'avg',
+    ]);
+    final count = _asInt(raw, const [
+      'rating_count',
+      'count',
+      'total_ratings',
+      'totalRatings',
+      'rated_count',
+      'ratedCount',
+    ]);
+
+    if (avg == null && count == null) {
+      return null;
+    }
+
+    return _MealFeedbackSummary(
+      mealCode: mealCode.trim().toUpperCase(),
+      averageRating: avg,
+      ratingCount: count,
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isInitializing) {
-      return const Scaffold(
-        backgroundColor: CouponCloudApp.cream,
-        body: SafeArea(
-          child: Center(
-            child: CircularProgressIndicator(color: CouponCloudApp.orange),
-          ),
-        ),
-      );
+  String? _normalizeMealCode(String? value) {
+    final normalized = value?.trim().toUpperCase();
+    if (normalized == null || normalized.isEmpty) {
+      return null;
     }
 
-    return Scaffold(
-      backgroundColor: CouponCloudApp.cream,
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 430),
-            child: Navigator(
-              initialRoute: _isLoggedIn ? AppRoutes.home : AppRoutes.login,
-              onGenerateRoute: _buildRoute,
-            ),
-          ),
-        ),
-      ),
-    );
+    switch (normalized) {
+      case 'B':
+      case 'BREAKFAST':
+        return 'B';
+      case 'L':
+      case 'LUNCH':
+        return 'L';
+      case 'S':
+      case 'SNACKS':
+      case 'SNACK':
+        return 'S';
+      case 'D':
+      case 'DINNER':
+        return 'D';
+      default:
+        return normalized;
+    }
+  }
+
+  String? _asText(Map<String, dynamic> raw, List<String> keys) {
+    for (final key in keys) {
+      final value = raw[key];
+      if (value != null) {
+        final text = value.toString().trim();
+        if (text.isNotEmpty && text != 'null') {
+          return text;
+        }
+      }
+    }
+    return null;
+  }
+
+  double? _asDouble(Map<String, dynamic> raw, List<String> keys) {
+    for (final key in keys) {
+      final value = raw[key];
+      if (value == null) {
+        continue;
+      }
+      if (value is num) {
+        return value.toDouble();
+      }
+      final parsed = double.tryParse(value.toString().trim());
+      if (parsed != null) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  int? _asInt(Map<String, dynamic> raw, List<String> keys) {
+    for (final key in keys) {
+      final value = raw[key];
+      if (value == null) {
+        continue;
+      }
+      if (value is num) {
+        return value.toInt();
+      }
+      final parsed = int.tryParse(value.toString().trim());
+      if (parsed != null) {
+        return parsed;
+      }
+    }
+    return null;
   }
 }
 
-class _LoginScreen extends StatefulWidget {
-  const _LoginScreen({required this.onLogin, required this.onOpenSignup});
+class _MealFeedbackSummary {
+  const _MealFeedbackSummary({
+    required this.mealCode,
+    required this.averageRating,
+    required this.ratingCount,
+  });
 
-  final _LoginAction onLogin;
-  final VoidCallback onOpenSignup;
-
-  @override
-  State<_LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<_LoginScreen> {
-  bool _isSubmitting = false;
-
-  final _loginPasswordController = TextEditingController();
-  final _loginStudentIdController = TextEditingController();
-
-  @override
-  void dispose() {
-    _loginPasswordController.dispose();
-    _loginStudentIdController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _run(Future<void> Function() action) async {
-    if (_isSubmitting) {
-      return;
-    }
-    setState(() => _isSubmitting = true);
-    await action();
-    if (!mounted) {
-      return;
-    }
-    setState(() => _isSubmitting = false);
-  }
-
-  void _submitLogin() {
-    final password = _loginPasswordController.text;
-    final studentId = _loginStudentIdController.text.trim();
-
-    if (password.isEmpty || studentId.isEmpty) {
-      _showValidationError('Student ID and password are required.');
-      return;
-    }
-
-    final payload = _LoginPayload(password: password, studentId: studentId);
-    _run(() => widget.onLogin(context, payload));
-  }
-
-  void _showValidationError(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
-      child: Column(
-        children: [
-          const SizedBox(height: 30),
-          const _LogoBlock(),
-          const _DividerWithLabel('LOGIN'),
-          const SizedBox(height: 18),
-          _InputField('Student ID', controller: _loginStudentIdController),
-          const SizedBox(height: 14),
-          _InputField(
-            'Password',
-            controller: _loginPasswordController,
-            obscureText: true,
-          ),
-          const SizedBox(height: 18),
-          _PrimaryButton(
-            label: 'Login',
-            onPressed: _isSubmitting ? null : _submitLogin,
-          ),
-          const SizedBox(height: 16),
-          TextButton(
-            onPressed: _isSubmitting ? null : widget.onOpenSignup,
-            child: const Text(
-              'No account? Sign up',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: CouponCloudApp.navy,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SignupScreen extends StatefulWidget {
-  const _SignupScreen({required this.onSignup, required this.onOpenLogin});
-
-  final _SignupAction onSignup;
-  final VoidCallback onOpenLogin;
-
-  @override
-  State<_SignupScreen> createState() => _SignupScreenState();
-}
-
-class _SignupScreenState extends State<_SignupScreen> {
-  bool _isSubmitting = false;
-  String _signupRole = 'student';
-
-  final _signupNameController = TextEditingController();
-  final _signupEmailController = TextEditingController();
-  final _signupPasswordController = TextEditingController();
-  final _signupStudentIdController = TextEditingController();
-  final _signupStaffIdController = TextEditingController();
-  final _signupHostelIdController = TextEditingController();
-
-  @override
-  void dispose() {
-    _signupNameController.dispose();
-    _signupEmailController.dispose();
-    _signupPasswordController.dispose();
-    _signupStudentIdController.dispose();
-    _signupStaffIdController.dispose();
-    _signupHostelIdController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _run(Future<void> Function() action) async {
-    if (_isSubmitting) {
-      return;
-    }
-    setState(() => _isSubmitting = true);
-    await action();
-    if (!mounted) {
-      return;
-    }
-    setState(() => _isSubmitting = false);
-  }
-
-  void _submitSignup() {
-    final name = _signupNameController.text.trim();
-    final email = _signupEmailController.text.trim();
-    final password = _signupPasswordController.text;
-    final studentId = _signupStudentIdController.text.trim();
-    final staffId = _signupStaffIdController.text.trim();
-    final hostelId = _signupHostelIdController.text.trim();
-
-    if (name.isEmpty || email.isEmpty || password.isEmpty || hostelId.isEmpty) {
-      _showValidationError('Signup fields cannot be empty.');
-      return;
-    }
-
-    if (_signupRole == 'student' && studentId.isEmpty) {
-      _showValidationError('Student ID is required for student signup.');
-      return;
-    }
-
-    if (_signupRole == 'staff' && staffId.isEmpty) {
-      _showValidationError('Staff ID is required for staff signup.');
-      return;
-    }
-
-    final payload = _SignupPayload(
-      name: name,
-      email: email,
-      password: password,
-      role: _signupRole,
-      hostelId: hostelId,
-      studentId: _signupRole == 'student' ? studentId : null,
-      staffId: _signupRole == 'staff' ? staffId : null,
-    );
-
-    _run(() => widget.onSignup(context, payload));
-  }
-
-  void _showValidationError(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
-      child: Column(
-        children: [
-          const SizedBox(height: 30),
-          const _LogoBlock(),
-          const SizedBox(height: 22),
-          const _DividerWithLabel('SIGNUP'),
-          const SizedBox(height: 16),
-          _InputField('Full Name', controller: _signupNameController),
-          const SizedBox(height: 12),
-          _InputField('Email', controller: _signupEmailController),
-          const SizedBox(height: 12),
-          _InputField(
-            'Password',
-            controller: _signupPasswordController,
-            obscureText: true,
-          ),
-          const SizedBox(height: 12),
-          _DropdownMock(
-            const ['student', 'staff'],
-            selectedValue: _signupRole,
-            onChanged: _isSubmitting
-                ? null
-                : (value) => setState(() => _signupRole = value ?? _signupRole),
-          ),
-          const SizedBox(height: 12),
-          _InputField(
-            _signupRole == 'student' ? 'Student ID' : 'Staff ID',
-            controller: _signupRole == 'student'
-                ? _signupStudentIdController
-                : _signupStaffIdController,
-          ),
-          const SizedBox(height: 12),
-          _InputField('Hostel ID', controller: _signupHostelIdController),
-          const SizedBox(height: 16),
-          _PrimaryButton(
-            label: 'Signup',
-            onPressed: _isSubmitting ? null : _submitSignup,
-          ),
-          const SizedBox(height: 18),
-          const Text(
-            'Signup sends name, email, password, role, role ID, and hostel ID.',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: Color(0x80011627),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextButton(
-            onPressed: _isSubmitting ? null : widget.onOpenLogin,
-            child: const Text(
-              'Already have an account? Login',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: CouponCloudApp.navy,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  final String mealCode;
+  final double? averageRating;
+  final int? ratingCount;
 }
 
 class _MainScreen extends StatelessWidget {
@@ -1880,6 +1570,11 @@ class _MainScreen extends StatelessWidget {
                 icon: Icons.star,
                 label: 'Rate\nMeal',
                 onTap: () => onNavigate(AppRoutes.rate),
+              ),
+              _ActionTile(
+                icon: Icons.report_problem_outlined,
+                label: 'Hostel\nComplaints',
+                onTap: () => onNavigate(AppRoutes.hostelComplaints),
               ),
             ],
           ),
@@ -2002,8 +1697,10 @@ class _MenusScreen extends StatefulWidget {
 
 class _MenusScreenState extends State<_MenusScreen> {
   final _menuApi = const _MessMenuApi();
+  final _summaryApi = const _DailyFeedbackSummaryApi();
   List<String> _hostels = const [];
   Map<String, List<_MessMenuEntry>> _menusByHostel = const {};
+  Map<String, Map<String, _MealFeedbackSummary>> _summariesByHostel = const {};
   bool _isLoading = true;
   String? _error;
   int _selected = 0;
@@ -2014,31 +1711,31 @@ class _MenusScreenState extends State<_MenusScreen> {
     unawaited(_loadMenus());
   }
 
-  Future<void> _loadMenus() async {
+  Future<void> _loadMenus({bool forceRefresh = false}) async {
     setState(() {
       _isLoading = true;
       _error = null;
     });
 
     try {
-      final cachedMenus = await _DailyCache.loadMenus();
-      if (cachedMenus != null) {
+      Map<String, List<_MessMenuEntry>> grouped = const {};
+      if (!forceRefresh) {
+        final cachedMenus = await _DailyCache.loadMenus();
+        if (cachedMenus != null) {
+          grouped = cachedMenus;
+        }
+      }
+
+      if (grouped.isEmpty) {
+        grouped = await _menuApi.fetchFullDayMenusByHostel();
         if (!mounted) {
           return;
         }
 
-        final hostels = cachedMenus.keys.toList()..sort();
-        setState(() {
-          _menusByHostel = cachedMenus;
-          _hostels = hostels;
-          _selected = 0;
-          _isLoading = false;
-          _error = hostels.isEmpty ? 'No menu data found for today.' : null;
-        });
-        return;
+        unawaited(_DailyCache.saveMenus(grouped));
       }
 
-      final grouped = await _menuApi.fetchFullDayMenusByHostel();
+      final summaries = await _summaryApi.fetchDailySummary();
       if (!mounted) {
         return;
       }
@@ -2047,11 +1744,11 @@ class _MenusScreenState extends State<_MenusScreen> {
       setState(() {
         _menusByHostel = grouped;
         _hostels = hostels;
+        _summariesByHostel = summaries;
         _selected = 0;
         _isLoading = false;
         _error = hostels.isEmpty ? 'No menu data found for today.' : null;
       });
-      unawaited(_DailyCache.saveMenus(grouped));
     } catch (error) {
       if (!mounted) {
         return;
@@ -2085,6 +1782,9 @@ class _MenusScreenState extends State<_MenusScreen> {
     final selectedMenus = selectedHostel == null
         ? const <_MessMenuEntry>[]
         : (_menusByHostel[selectedHostel] ?? const <_MessMenuEntry>[]);
+    final selectedSummaries = selectedHostel == null
+        ? const <String, _MealFeedbackSummary>{}
+        : (_summariesByHostel[selectedHostel] ?? const <String, _MealFeedbackSummary>{});
 
     return _ScreenShell(
       title: 'Today\'s Menus',
@@ -2108,12 +1808,16 @@ class _MenusScreenState extends State<_MenusScreen> {
           ? [
               _NoteCard('Could not load menus: $_error'),
               const SizedBox(height: 10),
-              _SecondaryButton(label: 'Retry', onPressed: _loadMenus),
+              _SecondaryButton(
+                label: 'Retry',
+                onPressed: () => _loadMenus(forceRefresh: true),
+              ),
             ]
           : [
               for (var i = 0; i < selectedMenus.length; i++) ...[
                 _MenuCard(
                   title: _mealTitle(selectedMenus[i].meal),
+                  summary: selectedSummaries[selectedMenus[i].meal.toUpperCase()],
                   titleColor: i == 0 ? CouponCloudApp.orange : null,
                   muted: i != 0,
                   items: selectedMenus[i].items,
@@ -2998,7 +2702,7 @@ class _QrCardState extends State<_QrCard> {
     try {
       final requestedToStudentId = await showDialog<String>(
         context: context,
-        builder: (context) {
+        builder: (dialogContext) {
           return AlertDialog(
             title: const Text('Request coupon exchange'),
             content: TextField(
@@ -3011,7 +2715,10 @@ class _QrCardState extends State<_QrCard> {
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.of(context).pop(),
+                onPressed: () => Navigator.of(
+                  dialogContext,
+                  rootNavigator: true,
+                ).pop(null),
                 child: const Text('Cancel'),
               ),
               TextButton(
@@ -3020,7 +2727,10 @@ class _QrCardState extends State<_QrCard> {
                   if (entered.isEmpty) {
                     return;
                   }
-                  Navigator.of(context).pop(entered);
+                  Navigator.of(
+                    dialogContext,
+                    rootNavigator: true,
+                  ).pop(entered);
                 },
                 child: const Text('Send'),
               ),
@@ -3049,6 +2759,7 @@ class _QrCardState extends State<_QrCard> {
 
       final messenger = ScaffoldMessenger.of(context);
       if (result.isSuccess) {
+        unawaited(_DailyCache.clearCouponsResponse());
         unawaited(_DailyCache.clearQrBytes(couponId));
         unawaited(_refreshQrForSelectedMeal());
         messenger.showSnackBar(
@@ -3081,8 +2792,15 @@ class _QrCardState extends State<_QrCard> {
     });
 
     try {
-      final coupons = await _couponApi.fetchCoupons();
-      final coupon = _findCouponForMeal(coupons, selectedLabel);
+      final cachedCoupon = await _DailyCache.loadMealCoupon(selectedLabel);
+      _CouponRecord? coupon = cachedCoupon;
+      if (coupon == null) {
+        final coupons = await _couponApi.fetchCoupons();
+        coupon = _findCouponForMeal(coupons, selectedLabel);
+        if (coupon != null) {
+          unawaited(_DailyCache.saveMealCoupon(selectedLabel, coupon));
+        }
+      }
 
       if (coupon == null) {
         if (!mounted) {
@@ -3101,28 +2819,41 @@ class _QrCardState extends State<_QrCard> {
         return;
       }
 
-      final qrImageUrl = coupon.qrImageUrl?.trim();
+      final resolvedCoupon = coupon!;
+      final qrImageUrl = resolvedCoupon.qrImageUrl?.trim();
+      final isExpired = _isCouponExpired(resolvedCoupon);
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _currentCouponId = coupon.couponId;
-        _currentCouponHostelId = coupon.hostelId?.trim().isNotEmpty == true
-            ? coupon.hostelId!.trim()
-            : _extractHostelFromCouponId(coupon.couponId);
-        _currentCouponStart = _parseCouponStart(coupon.couponDate);
+        _currentCouponId = resolvedCoupon.couponId;
+        _currentCouponHostelId = resolvedCoupon.hostelId?.trim().isNotEmpty ==
+                true
+            ? resolvedCoupon.hostelId!.trim()
+            : _extractHostelFromCouponId(resolvedCoupon.couponId);
+        _currentCouponStart = _parseCouponStart(resolvedCoupon.couponDate);
         _currentCouponEnd = _parseCouponEnd(
-          couponDate: coupon.couponDate,
-          validTill: coupon.validTill,
+          couponDate: resolvedCoupon.couponDate,
+          validTill: resolvedCoupon.validTill,
         );
         _qrImageUrl = null;
         _qrBytes = null;
-        _errorMessage = null;
+        _errorMessage = isExpired ? 'Coupon is expired.' : null;
       });
 
-      final cachedQrBytes = await _DailyCache.loadQrBytes(coupon.couponId);
+      if (isExpired) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final cachedQrBytes = await _DailyCache.loadQrBytes(resolvedCoupon.couponId);
       if (cachedQrBytes != null) {
         if (!mounted) {
           return;
@@ -3137,7 +2868,8 @@ class _QrCardState extends State<_QrCard> {
       }
 
       try {
-        final qrBytes = await _couponApi.fetchCouponQrBytes(coupon.couponId);
+        final qrBytes =
+            await _couponApi.fetchCouponQrBytes(resolvedCoupon.couponId);
 
         if (!mounted) {
           return;
@@ -3149,7 +2881,7 @@ class _QrCardState extends State<_QrCard> {
           _isLoading = false;
           _errorMessage = null;
         });
-        unawaited(_DailyCache.saveQrBytes(coupon.couponId, qrBytes));
+        unawaited(_DailyCache.saveQrBytes(resolvedCoupon.couponId, qrBytes));
       } catch (qrError) {
         if (!mounted) {
           return;
@@ -3324,6 +3056,29 @@ class _QrCardState extends State<_QrCard> {
     }
 
     return null;
+  }
+
+  bool _isCouponExpired(_CouponRecord coupon) {
+    final end = _parseCouponEnd(
+      couponDate: coupon.couponDate,
+      validTill: coupon.validTill,
+    );
+    if (end == null) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    return !now.isBefore(end);
+  }
+
+  bool _isCouponExpiredForCurrentSelection() {
+    final end = _currentCouponEnd;
+    if (end == null) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    return !now.isBefore(end);
   }
 
   @override
@@ -3524,7 +3279,9 @@ class _QrCardState extends State<_QrCard> {
           const SizedBox(height: 4),
           _SecondaryButton(
             label: 'Request Exchange',
-            onPressed: _isLoading || _currentCouponId == null
+            onPressed: _isLoading ||
+                    _currentCouponId == null ||
+                    _isCouponExpiredForCurrentSelection()
                 ? null
                 : _openExchangeRequestDialog,
           ),
@@ -4180,11 +3937,13 @@ class _MenuCard extends StatelessWidget {
   const _MenuCard({
     required this.title,
     required this.items,
+    this.summary,
     this.titleColor,
     this.muted = false,
   });
   final String title;
   final List<String> items;
+  final _MealFeedbackSummary? summary;
   final Color? titleColor;
   final bool muted;
 
@@ -4210,13 +3969,24 @@ class _MenuCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: titleColor ?? CouponCloudApp.navy,
-                  ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: titleColor ?? CouponCloudApp.navy,
+                        ),
+                      ),
+                    ),
+                    if (summary != null)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 10),
+                        child: _MealSummaryBadge(summary: summary!),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(height: 10),
@@ -4251,6 +4021,63 @@ class _MenuCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _MealSummaryBadge extends StatelessWidget {
+  const _MealSummaryBadge({required this.summary});
+
+  final _MealFeedbackSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final average = summary.averageRating;
+    final count = summary.ratingCount;
+    final rating = average == null ? 0.0 : average.clamp(0.0, 5.0);
+    final countText = count == null ? '0' : count.toString();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0x1AFF8C00),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0x33FF8C00)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(5, (index) {
+              final filled = rating >= index + 1;
+              final halfFilled = !filled && rating > index && rating < index + 1;
+              return Padding(
+                padding: EdgeInsets.only(right: index == 4 ? 0 : 1),
+                child: Icon(
+                  halfFilled
+                      ? Icons.star_half_rounded
+                      : filled
+                      ? Icons.star_rounded
+                      : Icons.star_border_rounded,
+                  size: 12,
+                  color: CouponCloudApp.orange,
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${average == null ? '--' : average.toStringAsFixed(1)} | $countText rated',
+            style: const TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+              color: CouponCloudApp.orange,
+            ),
+          ),
+        ],
       ),
     );
   }
