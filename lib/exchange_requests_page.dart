@@ -1,7 +1,7 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 
-import 'api_http.dart';
+import 'http_client_factory.dart' as http_client_factory;
 import 'api_request_policy.dart';
 import 'app_env.dart';
 import 'package:flutter/material.dart';
@@ -311,7 +311,7 @@ class _CouponExchangeApi {
   Future<List<_ExchangeRequestRecord>> fetchExchangeRequests() async {
     try {
       final response = await ApiRequestPolicy.runGetWithRetry(
-        () => ApiHttp.client.get(
+        () => http_client_factory.createHttpClient().get(
           _exchangeRequestsUri,
           headers: const {'Accept': 'application/json'},
         ),
@@ -349,7 +349,7 @@ class _CouponExchangeApi {
         ..headers['Accept'] = 'application/json'
         ..bodyBytes = utf8.encode('{}');
 
-      final streamed = await ApiHttp.client.send(request)
+      final streamed = await http_client_factory.createHttpClient().send(request)
           .timeout(ApiRequestPolicy.writeTimeout);
       final response = await http.Response.fromStream(streamed);
 

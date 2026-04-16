@@ -8,11 +8,12 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'app_cache.dart';
-import 'api_http.dart';
 import 'api_request_policy.dart';
 import 'app_env.dart';
 import 'exchange_requests_page.dart';
+import 'http_client_factory.dart' as http_client_factory;
 import 'session_storage.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -180,6 +181,10 @@ class _CouponExchangeRequestRecord {
       (status ?? '').trim().toLowerCase() == 'pending';
 }
 
+abstract final class _ApiHttp {
+  static final http.Client client = http_client_factory.createHttpClient();
+}
+
 class _CouponRecord {
   const _CouponRecord({required this.couponId, this.raw});
 
@@ -235,7 +240,7 @@ class _AuthApi {
         ..headers['Accept'] = 'application/json'
         ..bodyBytes = utf8.encode(requestBody);
 
-      final streamed = await ApiHttp.client
+      final streamed = await _ApiHttp.client
           .send(request)
           .timeout(ApiRequestPolicy.writeTimeout);
       final response = await http.Response.fromStream(streamed);
@@ -284,7 +289,7 @@ class _FeedbackApi {
         ..headers['Accept'] = 'application/json'
         ..bodyBytes = utf8.encode(requestBody);
 
-      final streamed = await ApiHttp.client
+      final streamed = await _ApiHttp.client
           .send(request)
           .timeout(ApiRequestPolicy.writeTimeout);
       final response = await http.Response.fromStream(streamed);
@@ -351,7 +356,7 @@ class _ComplaintApi {
         );
       }
 
-      final streamed = await ApiHttp.client
+      final streamed = await _ApiHttp.client
           .send(request)
           .timeout(ApiRequestPolicy.uploadTimeout);
       final response = await http.Response.fromStream(streamed);
@@ -381,7 +386,7 @@ class _CouponExchangeApi {
   Future<List<_CouponExchangeRequestRecord>> fetchExchangeRequests() async {
     try {
       final response = await ApiRequestPolicy.runGetWithRetry(
-        () => ApiHttp.client.get(
+        () => _ApiHttp.client.get(
           _exchangeRequestsUri,
           headers: const {'Accept': 'application/json'},
         ),
@@ -420,7 +425,7 @@ class _CouponExchangeApi {
         ..headers['Accept'] = 'application/json'
         ..bodyBytes = utf8.encode(requestBody);
 
-      final streamed = await ApiHttp.client
+      final streamed = await _ApiHttp.client
           .send(request)
           .timeout(ApiRequestPolicy.writeTimeout);
       final response = await http.Response.fromStream(streamed);
@@ -458,7 +463,7 @@ class _CouponExchangeApi {
         ..headers['Accept'] = 'application/json'
         ..bodyBytes = utf8.encode('{}');
 
-      final streamed = await ApiHttp.client
+      final streamed = await _ApiHttp.client
           .send(request)
           .timeout(ApiRequestPolicy.writeTimeout);
       final response = await http.Response.fromStream(streamed);
@@ -559,7 +564,7 @@ class _CouponApi {
 
   Future<List<_CouponRecord>> fetchCoupons() async {
     final response = await ApiRequestPolicy.runGetWithRetry(
-      () => ApiHttp.client.get(
+      () => _ApiHttp.client.get(
         _couponsUri,
         headers: const {'Accept': 'application/json'},
       ),
@@ -578,7 +583,7 @@ class _CouponApi {
   Future<Uint8List> fetchCouponQrBytes(String couponId) async {
     final uri = AppEnv.uri('/coupons/${Uri.encodeComponent(couponId)}/qr/');
     final response = await ApiRequestPolicy.runGetWithRetry(
-      () => ApiHttp.client.get(
+      () => _ApiHttp.client.get(
         uri,
         headers: const {'Accept': 'application/json,image/*,*/*'},
       ),
@@ -702,7 +707,7 @@ class _CouponApi {
 
     if (normalized.startsWith('/')) {
       final imageResponse = await ApiRequestPolicy.runGetWithRetry(
-        () => ApiHttp.client.get(AppEnv.apiBaseUri.resolve(normalized)),
+        () => _ApiHttp.client.get(AppEnv.apiBaseUri.resolve(normalized)),
       );
       if (imageResponse.statusCode < 200 || imageResponse.statusCode >= 300) {
         throw Exception(
@@ -714,7 +719,7 @@ class _CouponApi {
 
     if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
       final imageResponse = await ApiRequestPolicy.runGetWithRetry(
-        () => ApiHttp.client.get(Uri.parse(normalized)),
+        () => _ApiHttp.client.get(Uri.parse(normalized)),
       );
       if (imageResponse.statusCode < 200 || imageResponse.statusCode >= 300) {
         throw Exception(
@@ -747,7 +752,7 @@ class _StudentApi {
   Future<Map<String, dynamic>> fetchStudentDetails(String studentId) async {
     final uri = AppEnv.uri('/students/${Uri.encodeComponent(studentId)}/');
     final response = await ApiRequestPolicy.runGetWithRetry(
-      () => ApiHttp.client.get(
+      () => _ApiHttp.client.get(
         uri,
         headers: const {'Accept': 'application/json'},
       ),
@@ -1049,7 +1054,7 @@ class _MessMenuApi {
         queryParameters: {'day_of_week': dayOfWeek},
       );
       final response = await ApiRequestPolicy.runGetWithRetry(
-        () => ApiHttp.client.get(
+        () => _ApiHttp.client.get(
           uri,
           headers: const {'Accept': 'application/json'},
         ),
