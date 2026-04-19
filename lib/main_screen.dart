@@ -159,10 +159,11 @@ class _CouponCloudHomeState extends State<CouponCloudHome> {
       actionName:
           '${payload.role[0].toUpperCase()}${payload.role.substring(1)} signup',
       request: () => _authApi.signup(payload),
-      onSuccess: () {
-        if (payload.role == 'student' && payload.studentId != null) {
-          unawaited(_loadStudentProfile(payload.studentId!));
-        }
+onSuccess: () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Signup successful!')),
+        );
+        Navigator.of(context).pushReplacementNamed(AppRoutes.login);
       },
     );
   }
