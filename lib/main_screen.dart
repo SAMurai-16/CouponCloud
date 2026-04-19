@@ -238,9 +238,8 @@ class _CouponCloudHomeState extends State<CouponCloudHome> {
 
     if (result.isSuccess) {
       onSuccess?.call();
-      final details = _buildResponseSummary(result);
       messenger.showSnackBar(
-        SnackBar(content: Text('$actionName success: $details')),
+        SnackBar(content: Text('$actionName successful.')),
       );
       return;
     }

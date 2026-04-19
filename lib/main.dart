@@ -2478,20 +2478,18 @@ class _LogoBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-  return Column(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: [
-      // We removed the white DecoratedBox so the logo is the hero
-      Image.asset(
-        'logo.png',
-        width: 320, // Make this much larger
-        height: 320,
-        fit: BoxFit.contain,
-      ),
-      // No need for extra Text widgets if they are already in your png!
-    ],
-  );
-}
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Image.asset(
+          'logo.png',
+          width: 150,
+          height: 150,
+          fit: BoxFit.contain,
+        ),
+      ],
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

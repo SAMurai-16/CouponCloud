@@ -62,6 +62,7 @@ class _LoginScreenState extends State<_LoginScreen> {
         children: [
           const SizedBox(height: 30),
           const _LogoBlock(),
+          const SizedBox(height: 14),
           const _DividerWithLabel('LOGIN'),
           const SizedBox(height: 18),
           _InputField('Student ID', controller: _loginStudentIdController),
@@ -222,7 +223,7 @@ class _SignupScreenState extends State<_SignupScreen> {
         children: [
           const SizedBox(height: 30),
           const _LogoBlock(),
-          const SizedBox(height: 22),
+          const SizedBox(height: 14),
           const _DividerWithLabel('SIGNUP'),
           const SizedBox(height: 16),
           _InputField('Full Name', controller: _signupNameController),
