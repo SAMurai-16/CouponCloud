@@ -2681,86 +2681,82 @@ class _QrCardState extends State<_QrCard> {
     if (couponId == null || couponId.trim().isEmpty) {
       return;
     }
+    String enteredStudentId = '';
 
-    final studentIdController = TextEditingController();
-
-    try {
-      final requestedToStudentId = await showDialog<String>(
-        context: context,
-        builder: (dialogContext) {
-          return AlertDialog(
-            title: const Text('Request coupon exchange'),
-            content: TextField(
-              controller: studentIdController,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Student ID',
-                hintText: 'Enter recipient student ID',
-              ),
+    final requestedToStudentId = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Request coupon exchange'),
+          content: TextField(
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Student ID',
+              hintText: 'Enter recipient student ID',
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(
-                  dialogContext,
-                  rootNavigator: true,
-                ).pop(null),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () {
-                  final entered = studentIdController.text.trim();
-                  if (entered.isEmpty) {
-                    return;
-                  }
-                  Navigator.of(
-                    dialogContext,
-                    rootNavigator: true,
-                  ).pop(entered);
-                },
-                child: const Text('Send'),
-              ),
-            ],
-          );
-        },
+            onChanged: (value) {
+              enteredStudentId = value.trim();
+            },
+            onSubmitted: (value) {
+              final entered = value.trim();
+              if (entered.isNotEmpty) {
+                Navigator.pop(dialogContext, entered);
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                if (enteredStudentId.isEmpty) {
+                  return;
+                }
+                Navigator.pop(dialogContext, enteredStudentId);
+              },
+              child: const Text('Send'),
+            ),
+          ],
+        );
+      },
+    );
+
+    final recipient = requestedToStudentId?.trim();
+    if (recipient == null || recipient.isEmpty) {
+      return;
+    }
+
+    final result = await widget.onRequestExchange(
+      _CouponExchangeRequestInput(
+        couponId: couponId,
+        requestedToStudentId: recipient,
+        message:
+            'Please take this ${_mealLabels[_selectedMeal].toLowerCase()} coupon.',
+      ),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    if (result.isSuccess) {
+      unawaited(_DailyCache.clearCouponsResponse());
+      unawaited(_DailyCache.clearQrBytes(couponId));
+      unawaited(_refreshQrForSelectedMeal());
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Exchange request sent.')),
       );
-
-      final recipient = requestedToStudentId?.trim();
-      if (recipient == null || recipient.isEmpty) {
-        return;
-      }
-
-      final result = await widget.onRequestExchange(
-        _CouponExchangeRequestInput(
-          couponId: couponId,
-          requestedToStudentId: recipient,
-          message:
-              'Please take this ${_mealLabels[_selectedMeal].toLowerCase()} coupon.',
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            result.error ?? 'Request failed: HTTP ${result.statusCode}',
+          ),
         ),
       );
-
-      if (!mounted) {
-        return;
-      }
-
-      final messenger = ScaffoldMessenger.of(context);
-      if (result.isSuccess) {
-        unawaited(_DailyCache.clearCouponsResponse());
-        unawaited(_DailyCache.clearQrBytes(couponId));
-        unawaited(_refreshQrForSelectedMeal());
-        messenger.showSnackBar(
-          const SnackBar(content: Text('Exchange request sent.')),
-        );
-      } else {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              result.error ?? 'Request failed: HTTP ${result.statusCode}',
-            ),
-          ),
-        );
-      }
-    } finally {
-      studentIdController.dispose();
     }
   }
 
