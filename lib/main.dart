@@ -1694,7 +1694,6 @@ class _MenusScreen extends StatefulWidget {
   @override
   State<_MenusScreen> createState() => _MenusScreenState();
 }
-
 class _MenusScreenState extends State<_MenusScreen> {
   final _menuApi = const _MessMenuApi();
   final _summaryApi = const _DailyFeedbackSummaryApi();
@@ -1775,6 +1774,25 @@ class _MenusScreenState extends State<_MenusScreen> {
     }
   }
 
+  // --- NEW FUNCTION ADDED HERE ---
+  String? _getActiveMealCode() {
+    final now = DateTime.now();
+    final hour = now.hour;
+    final minute = now.minute;
+
+    if (hour < 10 || (hour == 10 && minute < 30)) {
+      return 'B'; // Before 10:30 AM
+    } else if (hour < 14) {
+      return 'L'; // 10:30 AM - 2:00 PM
+    } else if (hour < 18) {
+      return 'S'; // 2:00 PM - 6:00 PM
+    } else if (hour < 22) {
+      return 'D'; // 6:00 PM - 10:00 PM
+    } else {
+      return null; // After 10:00 PM
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasMenus = _hostels.isNotEmpty;
@@ -1785,6 +1803,9 @@ class _MenusScreenState extends State<_MenusScreen> {
     final selectedSummaries = selectedHostel == null
         ? const <String, _MealFeedbackSummary>{}
         : (_summariesByHostel[selectedHostel] ?? const <String, _MealFeedbackSummary>{});
+
+    // --- GRAB THE ACTIVE MEAL CODE HERE ---
+    final activeMealCode = _getActiveMealCode();
 
     return _ScreenShell(
       title: 'Today\'s Menus',
@@ -1818,8 +1839,9 @@ class _MenusScreenState extends State<_MenusScreen> {
                 _MenuCard(
                   title: _mealTitle(selectedMenus[i].meal),
                   summary: selectedSummaries[selectedMenus[i].meal.toUpperCase()],
-                  titleColor: i == 0 ? CouponCloudApp.orange : null,
-                  muted: i != 0,
+                  // --- DYNAMIC HIGHLIGHT LOGIC ADDED HERE ---
+                  titleColor: selectedMenus[i].meal.toUpperCase() == activeMealCode ? CouponCloudApp.orange : null,
+                  muted: selectedMenus[i].meal.toUpperCase() != activeMealCode,
                   items: selectedMenus[i].items,
                 ),
                 if (i < selectedMenus.length - 1) const SizedBox(height: 14),
@@ -1831,7 +1853,6 @@ class _MenusScreenState extends State<_MenusScreen> {
     );
   }
 }
-
 class _RateScreen extends StatefulWidget {
   const _RateScreen({
     required this.onBack,
@@ -2457,54 +2478,20 @@ class _LogoBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        SizedBox(
-          width: 128,
-          height: 128,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.all(Radius.circular(24)),
-              boxShadow: [
-                BoxShadow(
-                  color: Color.fromRGBO(0, 0, 0, 0.10),
-                  blurRadius: 18,
-                  offset: Offset(0, 8),
-                ),
-              ],
-            ),
-            child: Center(
-              child: Image.asset(
-                'logo.png',
-                width: 88,
-                height: 88,
-                fit: BoxFit.contain,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'CouponCloud',
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w800,
-            color: CouponCloudApp.navy,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          'Your mess, your rules.',
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: Color(0x80011627),
-          ),
-        ),
-      ],
-    );
-  }
+  return Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      // We removed the white DecoratedBox so the logo is the hero
+      Image.asset(
+        'logo.png',
+        width: 320, // Make this much larger
+        height: 320,
+        fit: BoxFit.contain,
+      ),
+      // No need for extra Text widgets if they are already in your png!
+    ],
+  );
+}
 }
 
 class _Header extends StatelessWidget {
@@ -3408,7 +3395,7 @@ class _SectionLabel extends StatelessWidget {
         fontSize: 11,
         fontWeight: FontWeight.w800,
         letterSpacing: 1.6,
-        color: Color(0x8011627),
+        color: Colors.black,
       ),
     ),
   );
